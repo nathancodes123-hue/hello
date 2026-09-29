@@ -392,7 +392,7 @@ execute_command:
     ret
 
 .pwd:
-    mov esi, cwd
+    mov esi, current_dir
     call print_string
     call newline
     ret
@@ -409,8 +409,8 @@ execute_command:
     mov dword [last_status], 1
     ret
 .cd_root:
-    mov byte [cwd], '/'
-    mov byte [cwd+1], 0
+    mov byte [current_dir], '/'
+    mov byte [current_dir+1], 0
     xor eax, eax
     mov [last_status], eax
     ret
@@ -1656,7 +1656,7 @@ help_text db "Commands:",0
 
 about_text db "NovaOS 0.3 - a small x86 kernel with an in-memory VFS.",0
 cmd_not_found db "nova: command not found",0
-cwd db "/",0
+current_dir db "/",0
 uname_text db "NovaOS nova 0.3 i386 x86",0
 whoami_text db "root",0
 env_text db "USER=root HOME=/ PATH=/bin:/usr/bin SHELL=/bin/nova",0
