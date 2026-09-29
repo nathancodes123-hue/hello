@@ -71,7 +71,7 @@ kernel_idle:
 init_idt:
     mov edi, idt
     xor eax, eax
-    mov ecx, 256 * 2
+    mov ecx, 512
     rep stosd
 
     mov eax, timer_irq
@@ -1303,6 +1303,11 @@ kernel_stack_top:
 
 ; Set-1 US keyboard map. Zero means ignore.
 scan_table:
-    times 128 db 0
-    ; overwrite the useful set-1 positions
-    db 0
+    db 0,0,'1','2','3','4','5','6','7','8','9','0','-','=',0,0
+    db 'q','w','e','r','t','y','u','i','o','p','[',']',0,0,0,0
+    db 'd','f','g','h','j','k','l',';',39,96,0,0,'z','x','c','v'
+    db 'b','n','m',',','.','/',0,0,0,0,0,0,0,0,0,0
+    times 16 db 0
+    times 16 db 0
+    times 16 db 0
+    times 16 db 0
