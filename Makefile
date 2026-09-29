@@ -1,6 +1,6 @@
 NASM ?= nasm
 BUILD := build
-KERNEL_SECTORS := 64
+KERNEL_SECTORS := 128
 
 .PHONY: all clean run
 
