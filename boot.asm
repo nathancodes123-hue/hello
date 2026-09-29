@@ -2,7 +2,7 @@ bits 16
 org 0x7C00
 
 KERNEL_SEG     equ 0x1000
-KERNEL_SECTORS equ 64
+KERNEL_SECTORS equ 128
 SECTORS_TRACK  equ 18
 
 start:
