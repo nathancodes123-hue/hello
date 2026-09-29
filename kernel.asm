@@ -1777,6 +1777,7 @@ scan_table:
     db 'q','w','e','r','t','y','u','i','o','p','[',']',13,0,'a','s'
     db 'd','f','g','h','j','k','l',';',39,96,0,0,'z','x','c','v'
     db 'b','n','m',',','.','/',0,'*',0,' ',0,0,0,0,0,0
-    times 64 db 0    times 16 db 0
+    times 64 db 0
+    times 16 db 0
     times 16 db 0
     times 16 db 0
