@@ -41,6 +41,8 @@ start:
     mov esp, kernel_stack_top
     call clear_screen
     call init_idt
+    call init_pmm
+    call init_paging
     call init_pic
     call init_pit
     call init_vfs
@@ -73,6 +75,15 @@ init_idt:
     xor eax, eax
     mov ecx, 512
     rep stosd
+
+    ; CPU exceptions 0-31 all enter a fatal exception handler.
+    mov eax, exception_stub
+    xor ebx, ebx
+.exception_loop:
+    call set_idt_gate
+    inc ebx
+    cmp ebx, 32
+    jb .exception_loop
 
     mov eax, timer_irq
     mov ebx, 0x20
@@ -302,6 +313,10 @@ execute_command:
     call command_is
     jz .mem
 
+    mov edi, s_mm
+    call command_is
+    jz .mm
+
     mov edi, s_uptime
     call command_is
     jz .uptime
@@ -475,6 +490,20 @@ execute_command:
     call print_string
     mov eax, [heap_next]
     call print_hex
+    call newline
+    ret
+
+.mm:
+    mov esi, mm_text
+    call print_string
+    mov eax, [pmm_free_pages]
+    call print_decimal
+    mov esi, mm_pages
+    call print_string
+    mov eax, [heap_next]
+    call print_hex
+    mov esi, mm_heap
+    call print_string
     call newline
     ret
 
@@ -1185,6 +1214,249 @@ timer_housekeeping:
     ret
 
 ; ============================================================
+; Memory Management
+; ============================================================
+; This first MM layer manages a conservative 32 MiB physical window.
+; 4 KiB physical frames are tracked by a bitmap.
+; Paging identity-maps the same 32 MiB so kernel addresses remain stable.
+;
+; Later the bootloader can pass an E820 memory map and this layer can
+; replace the fixed window with firmware-reported usable regions.
+
+PMM_MAX_MEMORY equ 0x02000000
+PMM_PAGE_SIZE  equ 0x1000
+PMM_PAGE_COUNT equ PMM_MAX_MEMORY / PMM_PAGE_SIZE
+
+init_pmm:
+    ; Start with every frame reserved.
+    mov edi, pmm_bitmap
+    mov ecx, PMM_PAGE_COUNT / 8
+    mov al, 0xFF
+    rep stosb
+
+    ; Treat 1 MiB..32 MiB as initially usable.
+    mov edi, pmm_bitmap + 32
+    mov ecx, (PMM_PAGE_COUNT - 256) / 8
+    xor eax, eax
+    rep stosb
+
+    ; Reserve the kernel image itself, rounded to pages.
+    mov eax, 0x10000
+    mov ebx, kernel_end
+    add ebx, PMM_PAGE_SIZE - 1
+    and ebx, 0xFFFFF000
+.reserve_kernel:
+    cmp eax, ebx
+    jae .done
+    push eax
+    call pmm_mark_used
+    pop eax
+    add eax, PMM_PAGE_SIZE
+    jmp .reserve_kernel
+.done:
+    ; Reserve the fixed paging structures.
+    mov eax, 0x90000
+.reserve_tables:
+    call pmm_mark_used
+    add eax, PMM_PAGE_SIZE
+    cmp eax, 0xA0000
+    jb .reserve_tables
+
+    ; Count free frames.
+    call pmm_recount
+    ret
+
+pmm_mark_used:
+    push eax
+    push ebx
+    push ecx
+    mov ebx, eax
+    shr ebx, 12
+    mov ecx, ebx
+    shr ebx, 3
+    and ecx, 7
+    mov al, 1
+    shl al, cl
+    or [pmm_bitmap + ebx], al
+    pop ecx
+    pop ebx
+    pop eax
+    ret
+
+pmm_mark_free:
+    push eax
+    push ebx
+    push ecx
+    mov ebx, eax
+    shr ebx, 12
+    mov ecx, ebx
+    shr ebx, 3
+    and ecx, 7
+    mov al, 1
+    shl al, cl
+    not al
+    and [pmm_bitmap + ebx], al
+    pop ecx
+    pop ebx
+    pop eax
+    ret
+
+; EAX = physical 4 KiB frame, or 0 on failure.
+pmm_alloc:
+    push ebx
+    push ecx
+    push edx
+    xor ebx, ebx
+.find:
+    cmp ebx, PMM_PAGE_COUNT / 8
+    jae .fail
+    mov dl, [pmm_bitmap + ebx]
+    cmp dl, 0xFF
+    jne .byte_found
+    inc ebx
+    jmp .find
+.byte_found:
+    xor ecx, ecx
+.bit:
+    test dl, 1
+    jz .free
+    shr dl, 1
+    inc ecx
+    cmp ecx, 8
+    jb .bit
+    inc ebx
+    jmp .find
+.free:
+    mov eax, ebx
+    shl eax, 3
+    add eax, ecx
+    shl eax, 12
+    call pmm_mark_used
+    dec dword [pmm_free_pages]
+    pop edx
+    pop ecx
+    pop ebx
+    ret
+.fail:
+    xor eax, eax
+    pop edx
+    pop ecx
+    pop ebx
+    ret
+
+; EAX = physical 4 KiB frame.
+pmm_free:
+    cmp eax, PMM_MAX_MEMORY
+    jae .done
+    cmp eax, 0x100000
+    jb .done
+    call pmm_mark_free
+    inc dword [pmm_free_pages]
+.done:
+    ret
+
+pmm_recount:
+    push eax
+    push ebx
+    push ecx
+    push edx
+    xor eax, eax
+    xor ebx, ebx
+    mov ecx, PMM_PAGE_COUNT
+.count:
+    mov edx, ebx
+    shr edx, 3
+    mov esi, ebx
+    and esi, 7
+    mov dl, [pmm_bitmap + edx]
+    bt edx, esi
+    jc .used
+    inc eax
+.used:
+    inc ebx
+    loop .count
+    mov [pmm_free_pages], eax
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    ret
+
+; Build a simple legacy x86 page directory:
+; PDE[0..7] point to eight page tables, covering 32 MiB.
+init_paging:
+    mov edi, 0x90000
+    xor eax, eax
+    mov ecx, 1024
+    rep stosd
+
+    mov ebx, 0
+    mov edi, 0x91000
+    mov edx, 0
+.table_loop:
+    mov eax, edx
+    or eax, 0x003
+    mov ecx, 1024
+    push edi
+    push edx
+.entry_loop:
+    stosd
+    add edx, PMM_PAGE_SIZE
+    loop .entry_loop
+    pop edx
+    pop edi
+
+    mov eax, edi
+    or eax, 0x003
+    mov [0x90000 + ebx*4], eax
+    add edi, 0x1000
+    inc ebx
+    cmp ebx, 8
+    jb .table_loop
+
+    mov eax, 0x90000
+    mov cr3, eax
+    mov eax, cr0
+    or eax, 0x80000000
+    mov cr0, eax
+    jmp .flush
+.flush:
+    ret
+
+; Simple page-aligned kernel heap. Physical pages come from PMM;
+; this bump layer is deliberately conservative until a free-list/slab
+; allocator is added.
+kfree:
+    ret
+
+; ============================================================
+; Exceptions / fault containment
+; ============================================================
+
+exception_stub:
+    cli
+    mov esi, exception_text
+    call print_string
+    mov eax, [ticks]
+    call print_decimal
+    mov esi, exception_ticks
+    call print_string
+    mov eax, cr2
+    test eax, eax
+    jz .halt
+    mov esi, exception_cr2
+    call print_string
+    call print_hex
+.halt:
+    call newline
+    mov esi, panic_text
+    call print_string
+    call newline
+.fatal:
+    hlt
+    jmp .fatal
+
+; ============================================================
 ; Data
 ; ============================================================
 
@@ -1206,8 +1478,15 @@ cwd db "/",0
 uname_text db "NovaOS nova 0.3 i386 x86",0
 whoami_text db "root",0
 env_text db "USER=root HOME=/ PATH=/bin:/usr/bin SHELL=/bin/nova",0
+exception_text db "KERNEL EXCEPTION at tick ",0
+exception_ticks db " CR2=",0
+panic_text db "fatal: CPU exception; system halted.",0
+exception_cr2 db "",0
 cd_error db "cd: only / exists in the current VFS.",0
 mem_text db "heap next: ",0
+mm_text db "PMM free pages: ",0
+mm_pages db "  heap: ",0
+mm_heap db "",0
 uptime_text db " ticks",0
 reboot_text db "Rebooting...",0
 halt_text db "System halted.",0
@@ -1244,6 +1523,7 @@ s_mkdir db "mkdir",0
 s_rm db "rm",0
 s_stat db "stat",0
 s_mem db "mem",0
+s_mm db "mm",0
 s_uptime db "uptime",0
 s_history db "history",0
 s_uname db "uname",0
@@ -1291,15 +1571,22 @@ file_names times MAX_FILES*16 db 0
 file_data times MAX_FILES*128 db 0
 
 ; Kernel state
+pmm_free_pages dd 0
 cursor dd 0
 ticks dd 0
 last_status dd 0
 heap_next dd KERNEL_HEAP
 
+; Physical memory bitmap: 8192 frames / 8 = 1024 bytes.
+align 4
+pmm_bitmap times PMM_PAGE_COUNT/8 db 0
+
 ; Stack
 align 16
 kernel_stack times 16384 db 0
 kernel_stack_top:
+
+kernel_end:
 
 ; Set-1 US keyboard map. Zero means ignore.
 scan_table:
