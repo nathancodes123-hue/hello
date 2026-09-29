@@ -1,6 +1,6 @@
 NASM ?= nasm
 BUILD := build
-KERNEL_SECTORS := 16
+KERNEL_SECTORS := 64
 
 .PHONY: all clean run
 
@@ -15,6 +15,7 @@ $(BUILD)/boot.bin: boot.asm | $(BUILD)
 
 $(BUILD)/kernel.bin: kernel.asm | $(BUILD)
 	$(NASM) -f bin kernel.asm -o $@
+	@test $$(wc -c < $@) -le $$(($(KERNEL_SECTORS) * 512))
 	dd if=/dev/zero of=$@.pad bs=512 count=$(KERNEL_SECTORS) 2>/dev/null
 	dd if=$@ of=$@.pad conv=notrunc 2>/dev/null
 	mv $@.pad $@
