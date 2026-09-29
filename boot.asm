@@ -14,9 +14,13 @@ start:
     mov sp, 0x7C00
     mov [boot_drive], dl
 
-    mov ax, KERNEL_SEG
+    ; Enter BIOS VGA mode 13h (320x200, 256 colors) before protected mode.
+    mov ax, 0x0013
+    int 0x10
+
+    xor ax, ax
     mov es, ax
-    xor bx, bx
+    mov bx, KERNEL_SEG
     mov byte [sector], 2
     mov byte [head], 0
     mov byte [track], 0
