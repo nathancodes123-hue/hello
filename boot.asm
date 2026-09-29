@@ -1,6 +1,10 @@
 bits 16
 org 0x7C00
 
+KERNEL_SEG     equ 0x1000
+KERNEL_SECTORS equ 64
+SECTORS_TRACK  equ 18
+
 start:
     cli
     xor ax, ax
@@ -10,17 +14,45 @@ start:
     mov sp, 0x7C00
     mov [boot_drive], dl
 
-    mov ax, 0x1000
+    mov ax, KERNEL_SEG
     mov es, ax
     xor bx, bx
+    mov byte [sector], 2
+    mov byte [head], 0
+    mov byte [track], 0
+    mov byte [sectors_left], KERNEL_SECTORS
+
+.read_sector:
     mov ah, 0x02
-    mov al, 16
-    mov ch, 0
-    mov cl, 2
-    mov dh, 0
+    mov al, 1
+    mov ch, [track]
+    mov cl, [sector]
+    mov dh, [head]
     mov dl, [boot_drive]
     int 0x13
     jc disk_error
+
+    add bx, 512
+    jnc .buffer_ok
+    mov ax, es
+    add ax, 0x1000
+    mov es, ax
+    xor bx, bx
+.buffer_ok:
+
+    inc byte [sector]
+    cmp byte [sector], SECTORS_TRACK + 1
+    jb .same_track
+    mov byte [sector], 1
+    inc byte [head]
+    cmp byte [head], 2
+    jb .same_track
+    mov byte [head], 0
+    inc byte [track]
+.same_track:
+
+    dec byte [sectors_left]
+    jnz .read_sector
 
     lgdt [gdt_descriptor]
     mov eax, cr0
@@ -43,11 +75,17 @@ protected_mode:
     mov ax, 0x10
     mov ds, ax
     mov es, ax
+    mov fs, ax
+    mov gs, ax
     mov ss, ax
     mov esp, 0x90000
     jmp 0x08:0x1000
 
 boot_drive db 0
+sector db 2
+head db 0
+track db 0
+sectors_left db KERNEL_SECTORS
 disk_error_msg db "NovaOS: kernel disk read failed.", 0
 
 align 8
