@@ -1548,10 +1548,10 @@ pmm_recount:
 .count:
     mov edx, ebx
     shr edx, 3
-    movzx eax, byte [pmm_bitmap + edx]
+    movzx edx, byte [pmm_bitmap + edx]
     mov esi, ebx
     and esi, 7
-    bt eax, esi
+    bt edx, esi
     jc .used
     inc eax
 .used:
