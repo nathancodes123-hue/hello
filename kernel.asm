@@ -47,6 +47,7 @@ start:
     call init_pit
     call init_vfs
     call init_heap
+    call gui_init
 
     sti
 
@@ -59,7 +60,9 @@ start:
     mov esi, help_hint
     call print_string
     call newline
-    call shell_prompt
+    ; GUI owns the visible framebuffer; the legacy shell remains available
+    ; internally until the terminal/window system is connected.
+    call gui_render
 
 kernel_idle:
     call keyboard_poll
@@ -1214,6 +1217,185 @@ timer_housekeeping:
     ret
 
 ; ============================================================
+; GUI / VGA Mode 13h
+; ============================================================
+; The bootloader selects 320x200x256 VGA mode 13h while still in
+; real mode. The kernel then draws directly to A0000h after entering
+; protected mode. This is intentionally a first GUI layer; a later
+; VBE/GOP driver will replace the fixed VGA framebuffer.
+;
+; 320 * 200 = 64000 bytes, so the whole framebuffer is below 0xB0000
+; and is covered by the initial identity mapping.
+
+GUI_FB      equ 0xA0000
+GUI_WIDTH   equ 320
+GUI_HEIGHT  equ 200
+
+gui_init:
+    mov byte [gui_enabled], 1
+    ret
+
+; Draw a simple Nova desktop/window shell.
+gui_render:
+    cmp byte [gui_enabled], 0
+    je .done
+
+    ; Desktop.
+    mov eax, 1
+    xor ebx, ebx
+    xor ecx, ecx
+    mov edx, GUI_WIDTH
+    mov esi, GUI_HEIGHT
+    call gui_fill_rect
+
+    ; Top bar.
+    mov eax, 9
+    xor ebx, ebx
+    xor ecx, ecx
+    mov edx, GUI_WIDTH
+    mov esi, 18
+    call gui_fill_rect
+
+    ; Main window.
+    mov eax, 7
+    mov ebx, 24
+    mov ecx, 30
+    mov edx, 272
+    mov esi, 140
+    call gui_fill_rect
+
+    ; Window body.
+    mov eax, 0
+    mov ebx, 28
+    mov ecx, 52
+    mov edx, 264
+    mov esi, 114
+    call gui_fill_rect
+
+    ; Three window controls.
+    mov eax, 15
+    mov ebx, 34
+    mov ecx, 36
+    mov edx, 10
+    mov esi, 6
+    call gui_fill_rect
+
+    mov eax, 15
+    mov ebx, 50
+    mov ecx, 36
+    mov edx, 10
+    mov esi, 6
+    call gui_fill_rect
+
+    mov eax, 15
+    mov ebx, 66
+    mov ecx, 36
+    mov edx, 10
+    mov esi, 6
+    call gui_fill_rect
+
+    ; Terminal-like panel.
+    mov eax, 0
+    mov ebx, 40
+    mov ecx, 68
+    mov edx, 240
+    mov esi, 72
+    call gui_fill_rect
+
+    ; Status/task bar.
+    mov eax, 8
+    xor ebx, ebx
+    mov ecx, 184
+    mov edx, GUI_WIDTH
+    mov esi, 16
+    call gui_fill_rect
+
+    ; Nova logo block.
+    mov eax, 15
+    mov ebx, 12
+    mov ecx, 4
+    mov edx, 8
+    mov esi, 8
+    call gui_fill_rect
+    mov eax, 15
+    mov ebx, 20
+    mov ecx, 4
+    mov edx, 8
+    mov esi, 8
+    call gui_fill_rect
+    mov eax, 15
+    mov ebx, 16
+    mov ecx, 8
+    mov edx, 8
+    mov esi, 8
+    call gui_fill_rect
+.done:
+    ret
+
+; EAX=color, EBX=x, ECX=y, EDX=width, ESI=height.
+gui_fill_rect:
+    push eax
+    push ebx
+    push ecx
+    push edx
+    push esi
+    push edi
+
+    cmp ebx, GUI_WIDTH
+    jae .out
+    cmp ecx, GUI_HEIGHT
+    jae .out
+    test edx, edx
+    jz .out
+    test esi, esi
+    jz .out
+
+    mov edi, ebx
+    add edi, edx
+    cmp edi, GUI_WIDTH
+    jbe .width_ok
+    mov edx, GUI_WIDTH
+    sub edx, ebx
+.width_ok:
+
+    mov edi, ecx
+    add edi, esi
+    cmp edi, GUI_HEIGHT
+    jbe .height_ok
+    mov esi, GUI_HEIGHT
+    sub esi, ecx
+.height_ok:
+
+    mov edi, ecx
+    imul edi, GUI_WIDTH
+    add edi, ebx
+    add edi, GUI_FB
+
+    mov ebp, esi
+.row:
+    push edx
+    mov ecx, edx
+    mov edi, edi
+    mov ebx, eax
+    mov al, bl
+    rep stosb
+    pop edx
+
+    add edi, GUI_WIDTH
+    sub edi, edx
+    dec ebp
+    jnz .row
+
+.out:
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    ret
+
+; ============================================================
 ; Memory Management
 ; ============================================================
 ; This first MM layer manages a conservative 32 MiB physical window.
@@ -1366,10 +1548,10 @@ pmm_recount:
 .count:
     mov edx, ebx
     shr edx, 3
+    movzx eax, byte [pmm_bitmap + edx]
     mov esi, ebx
     and esi, 7
-    mov dl, [pmm_bitmap + edx]
-    bt edx, esi
+    bt eax, esi
     jc .used
     inc eax
 .used:
@@ -1572,6 +1754,7 @@ file_data times MAX_FILES*128 db 0
 
 ; Kernel state
 pmm_free_pages dd 0
+gui_enabled db 0
 cursor dd 0
 ticks dd 0
 last_status dd 0
@@ -1590,11 +1773,10 @@ kernel_end:
 
 ; Set-1 US keyboard map. Zero means ignore.
 scan_table:
-    db 0,0,'1','2','3','4','5','6','7','8','9','0','-','=',0,0
-    db 'q','w','e','r','t','y','u','i','o','p','[',']',0,0,0,0
+    db 27,0,'1','2','3','4','5','6','7','8','9','0','-','=',8,9
+    db 'q','w','e','r','t','y','u','i','o','p','[',']',13,0,'a','s'
     db 'd','f','g','h','j','k','l',';',39,96,0,0,'z','x','c','v'
-    db 'b','n','m',',','.','/',0,0,0,0,0,0,0,0,0,0
-    times 16 db 0
-    times 16 db 0
+    db 'b','n','m',',','.','/',0,'*',0,' ',0,0,0,0,0,0
+    times 64 db 0    times 16 db 0
     times 16 db 0
     times 16 db 0
