@@ -96,8 +96,8 @@ init_idt:
     mov ebx, 0x21
     call set_idt_gate
 
-    mov word [idtr.limit], (256 * 8) - 1
-    mov dword [idtr.base], idt
+    mov word [idtr], (256 * 8) - 1
+    mov dword [idtr + 2], idt
     lidt [idtr]
     ret
 
